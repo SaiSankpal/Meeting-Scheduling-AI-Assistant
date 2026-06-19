@@ -1,6 +1,7 @@
 # nodes/extract_intent.py
 
 import re
+import dateparser
 from datetime import datetime, timedelta
 from typing import List
 from graph_state import MeetingState
@@ -59,20 +60,66 @@ def _extract_time(text: str) -> str:
     return ""
 
 def _extract_date(text: str) -> str:
-    lowered = text.lower()
+    cleaned = text.strip()
 
-    # handle typos
-    if "tomorrow" in lowered or "tomorow" in lowered:
-        return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    # TRAP NUMERIC DATES FIRST (e.g., 20/06/2026, 20-06-2026, 20.06.2026)
+    # This regex looks for DD/MM/YYYY or DD/MM/YY formats safely
+    numeric_match = re.search(r"\b(\d{1,2})[./\-](\d{1,2})[./\-](\d{2,4})\b", cleaned)
+    if numeric_match:
+        day = int(numeric_match.group(1))
+        month = int(numeric_match.group(2))
+        year_str = numeric_match.group(3)
+        
+        # Handle 2-digit years safely (e.g., /26 -> 2026)
+        year = int(year_str)
+        if len(year_str) == 2:
+            year += 2000
+            
+        try:
+            # Validate that it's a real date and return standard ISO format
+            valid_date = datetime(year, month, day)
+            return valid_date.strftime("%d-%m-%Y")
+        except ValueError:
+            print("Following date does not exist: ", day, month, year)
+            return "Following date does not exist"
+            
+    # EXPLICIT LOOKUP FOR "COMING/NEXT WEEKDAYS" TO AVOID DATEPARSER CONFUSION
+    # Maps weekday names to their structural integer values in Python (Monday=0, Sunday=6)
+    weekdays = {
+        "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+        "friday": 4, "saturday": 5, "sunday": 6
+    }
+    
+    # Check if a weekday token exists in the sentence
+    for day_name, day_num in weekdays.items():
+        if day_name in cleaned:
+            today = datetime.now()
+            current_weekday = today.weekday()
+            
+            # Calculate how many days to add to get to that weekday
+            days_ahead = day_num - current_weekday
+            if days_ahead <= 0: 
+                # If the day passed or is today, "coming/next" implies next week's day
+                days_ahead += 7
+                
+            target_date = today + timedelta(days=days_ahead)
+            return target_date.strftime("%d-%m-%Y")
 
-    if "today" in lowered:
-        return datetime.now().strftime("%Y-%m-%d")
-
-    # explicit date
-    match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", text)
-    if match:
-        return match.group(1)
-
+    # FALLBACK TO DATEPARSER FOR TEXT DATES (e.g., "next Tuesday", "tomorrow")
+    # Clean out email patterns to prevent confusion
+    cleaned = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "", cleaned)
+    cleaned = re.sub(r"\b(schedule|meeting|with|at)\b", "", cleaned, flags=re.IGNORECASE)
+    
+    settings = {
+        'PREFER_DATES_FROM': 'future',
+        'DATE_ORDER': 'DMY',
+        'RELATIVE_BASE': datetime.now()
+    }
+    
+    parsed_date = dateparser.parse(cleaned, settings=settings)
+    if parsed_date:
+        return parsed_date.strftime("%d-%m-%Y")
+        
     return ""
 
 
